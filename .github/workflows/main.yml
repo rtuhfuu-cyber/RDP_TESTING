@@ -60,8 +60,8 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
-          # Tambahkan flag --ephemeral agar node terhapus otomatis dari Tailscale setelah RDP selesai
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --ephemeral
+          # Hubungkan ke Tailscale menggunakan Auth Key
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
           $tsIP = $null
           $retries = 0
