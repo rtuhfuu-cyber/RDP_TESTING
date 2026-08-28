@@ -11,15 +11,13 @@ jobs:
     steps:
       - name: Configure Core RDP Settings
         run: |
-          # Aktifkan Remote Desktop
+          # Aktifkan Remote Desktop & Izinkan NLA Authentication
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
 
-          # Hapus firewall rule lama (jika ada) tanpa menyebabkan error jika rule tidak ditemukan
+          # Hapus & tambahkan kembali rule firewall port 3389
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
           netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
-          
-          # Tambahkan rule firewall baru untuk port RDP 3389
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
 
           # Restart service Remote Desktop
@@ -27,26 +25,31 @@ jobs:
 
       - name: Create RDP User with Secure Password
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-              Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          # Buat password acak yang aman dan kompatibel (tanpa karakter bermasalah seperti \, ", $, &)
+          $charUpper = [char[]](65..90)
+          $charLower = [char[]](97..122)
+          $charNum   = [char[]](48..57)
+          $charSpec  = [char[]]@('!', '@', '#', '$', '%', '*', '-', '_')
           
+          $passArray = @()
+          $passArray += $charUpper | Get-Random -Count 5
+          $passArray += $charLower | Get-Random -Count 5
+          $passArray += $charNum   | Get-Random -Count 4
+          $passArray += $charSpec  | Get-Random -Count 2
+          $password = -join ($passArray | Sort-Object { Get-Random })
+
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          
+          # Hapus user RDP lama jika ada, lalu buat user baru
+          Remove-LocalUser -Name "RDP" -ErrorAction SilentlyContinue
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Set-LocalUser -Name "RDP" -PasswordNeverExpires $true
+          
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASS=$password"
+
 
       - name: Install Tailscale (Latest Version)
         run: |
@@ -60,19 +63,23 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
+          # Pastikan Service Tailscale berjalan
+          Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
           # Hubungkan ke Tailscale menggunakan Auth Key
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
+          while (-not $tsIP -and $retries -lt 15) {
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
               Start-Sleep -Seconds 5
               $retries++
           }
           
           if (-not $tsIP) {
-              Write-Error "Tailscale IP tidak didapatkan."
+              Write-Error "Tailscale IP tidak didapatkan. Cek apakah TAILSCALE_AUTH_KEY di GitHub Secrets sudah benar dan valid."
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
